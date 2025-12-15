@@ -1,0 +1,100 @@
+networks:
+  backend:
+
+volumes:
+  pgdata:
+  csvdata:
+
+services:
+  db:
+    image: postgres:16
+    container_name: iss_db
+    environment:
+      POSTGRES_DB: monolith
+      POSTGRES_USER: monouser
+      POSTGRES_PASSWORD: monopass
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monouser -d monolith"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - backend
+    ports:
+      - "5432:5432"
+
+  # Go ISS Service (migrated from Rust)
+  go_iss:
+    build:
+      context: ./services/go-iss
+    container_name: go_iss
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://monouser:monopass@db:5432/monolith}
+      NASA_API_URL: ${NASA_API_URL:-https://visualization.osdr.nasa.gov/biodata/api/v2/datasets/?format=json}
+      NASA_API_KEY: ${NASA_API_KEY:-DEMO_KEY}
+      FETCH_EVERY_SECONDS: ${FETCH_EVERY_SECONDS:-600}
+      WHERE_ISS_URL: ${WHERE_ISS_URL:-https://api.wheretheiss.at/v1/satellites/25544}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+    ports:
+      - "8081:3000"
+
+  # Node.js Web Service (migrated from PHP/Laravel)
+  node_web:
+    build:
+      context: ./services/node-web
+    container_name: node_web
+    environment:
+      PORT: 3000
+      GO_BASE: http://go_iss:3000
+      JWST_HOST: https://api.jwstapi.com
+      JWST_API_KEY: ${JWST_API_KEY:-6bf7a91f-30a6-42d9-aa8f-7d0093bca18f}
+      ASTRO_APP_ID: ${ASTRO_APP_ID:-5f359d59-ce53-4a7a-b857-08a76fcd3e83}
+      ASTRO_APP_SECRET: ${ASTRO_APP_SECRET:-c45d0dfce23f21658dbcade9e57e93f14dbfcd3750670bb723f68fd62003bb1b672dbd996d61086d874fcc0275a712aadfb73e021be12bfd02c44f849180f9c211e9ef3afe09c3319280ca6787397c2237563b18363daf8c24fb3bffc780367d70d713001f56bad4c9adec18b7cd54d1}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: monolith
+      DB_USERNAME: monouser
+      DB_PASSWORD: monopass
+    depends_on:
+      db:
+        condition: service_healthy
+      go_iss:
+        condition: service_started
+    networks:
+      - backend
+    ports:
+      - "8080:3000"
+
+  # Legacy Rust service (kept for reference, not started by default)
+  # rust_iss:
+  #   build:
+  #     context: ./services/rust-iss
+  #   container_name: rust_iss
+  #   ...
+
+  python_legacy:
+    build:
+      context: ./services/pascal-legacy
+    container_name: python_legacy
+    environment:
+      CSV_OUT_DIR: /data/csv
+      GEN_PERIOD_SEC: ${LEGACY_PERIOD:-300}
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: monouser
+      PGPASSWORD: monopass
+      PGDATABASE: monolith
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - csvdata:/data/csv
+    networks:
+      - backend
